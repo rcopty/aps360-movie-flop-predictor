@@ -12,7 +12,7 @@ DATASET_HANDLE = "tmdb/tmdb-movie-metadata"
 MOVIES_FILENAME = "tmdb_5000_movies.csv"
 CREDITS_FILENAME = "tmdb_5000_credits.csv"
 
-MINIMUM_BUDGET = 50_000_000
+MINIMUM_BUDGET = 0
 FLOP_THRESHOLD = 2.5
 MAX_TRACK_RECORD_RATIO = 10.0
 
@@ -159,7 +159,7 @@ def construct_final_dataset(
     df: pd.DataFrame,
     minimum_budget: int = MINIMUM_BUDGET,
 ) -> pd.DataFrame:
-    """Filter to valid high-budget films and fill cold-start features."""
+    """Filter to valid high-budget films and fill in no track record features."""
     result = df[
         (df["budget"] > minimum_budget)
         & (df["revenue"] > 0)
@@ -181,11 +181,12 @@ def construct_final_dataset(
 
 
 def prepare_tmdb_dataset() -> pd.DataFrame:
-    """Complete TMDB data-preparation pipeline."""
+    """Run the complete TMDB data-preparation pipeline."""
     movies, credits = load_tmdb_data()
     df = merge_movies_and_credits(movies, credits)
     df = add_financial_targets(df)
     df = add_track_record_features(df)
+    df = add_pre_release_features(df)
     df = construct_final_dataset(df)
     return df
 
@@ -215,3 +216,120 @@ def save_processed_dataset(
     df.to_csv(output_path, index=False)
 
     return output_path
+
+def extract_names(json_value: object) -> list[str]:
+    """Extract name fields from a TMDB JSON-list column."""
+    items = _parse_json_list(json_value)
+    return [
+        item["name"]
+        for item in items
+        if isinstance(item, dict) and item.get("name")
+    ]
+
+
+def has_collection(value: object) -> int:
+    """Return whether a movie belongs to a named collection."""
+    if value is None:
+        return 0
+    if isinstance(value, float) and np.isnan(value):
+        return 0
+    if isinstance(value, str):
+        value = value.strip().lower()
+        return int(value not in {"", "nan", "none", "{}"})
+
+    return 1
+
+MAJOR_STUDIO_TERMS = [
+    "warner bros",
+    "universal",
+    "paramount",
+    "walt disney",
+    "twentieth century fox",
+    "20th century fox",
+    "columbia pictures",
+    "sony pictures",
+    "metro-goldwyn-mayer",
+    "new line cinema",
+    "dreamworks",
+]
+
+
+def add_pre_release_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add genre, release timing, franchise, and studio features."""
+
+    result = df.copy()
+
+    # Release season
+    month = result["release_date"].dt.month
+
+    result["release_season"] = np.select(
+        [
+            month.isin([12, 1, 2]),
+            month.isin([3, 4, 5]),
+            month.isin([6, 7, 8]),
+            month.isin([9, 10, 11]),
+        ],
+        [
+            "Winter",
+            "Spring",
+            "Summer",
+            "Fall",
+        ],
+        default="Unknown",
+    )
+
+    # Sequel/franchise proxy derived from movie keywords
+    franchise_terms = {
+        "sequel",
+        "prequel",
+        "reboot",
+        "remake",
+        "spin off",
+        "spin-off",
+    }
+    keyword_names = result["keywords"].apply(extract_names)
+    result["is_sequel_or_remake"] = keyword_names.apply(
+        lambda names: int(
+            any(
+                term in keyword.lower()
+                for keyword in names
+                for term in franchise_terms
+            )
+        )
+    )
+
+    # Production-company tier
+    company_names = result["production_companies"].apply(
+        extract_names
+    )
+
+    result["major_studio"] = company_names.apply(
+        lambda names: int(
+            any(
+                studio_term in company.lower()
+                for company in names
+                for studio_term in MAJOR_STUDIO_TERMS
+            )
+        )
+    )
+    # Multi-hot genre columns
+    genre_names = result["genres"].apply(extract_names)
+    all_genres = sorted(
+        {
+            genre
+            for movie_genres in genre_names
+            for genre in movie_genres
+        }
+    )
+    for genre in all_genres:
+        column_name = (
+            "genre_"
+            + genre.lower()
+            .replace(" ", "_")
+            .replace("-", "_")
+        )
+        result[column_name] = genre_names.apply(
+            lambda movie_genres: int(genre in movie_genres)
+        )
+
+    return result

@@ -8,3 +8,4 @@ __pycache__/
 
 # Jupyter temporary files
 .ipynb_checkpoints/
+data/processed/synopsis_embeddings.npy

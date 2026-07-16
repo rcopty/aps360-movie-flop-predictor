@@ -1,0 +1,9 @@
+kagglehub[pandas-datasets]
+numpy
+pandas
+jupyter
+ipykernel
+matplotlib
+scikit-learn
+torch
+sentence-transformers
